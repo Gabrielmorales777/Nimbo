@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f172a">
+  <title>Nimbo</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; }
+    header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; margin-bottom: 15px; }
+    h1 { margin: 0; font-size: 2rem; }
+    header span { color: #94a3b8; font-size: .9rem; }
+    .banner { padding: 18px 22px; border-radius: 12px; font-size: 1.4rem; font-weight: bold; color: #fff; margin-bottom: 15px; background: #334155; }
+    .banner small { display: block; font-weight: normal; font-size: .95rem; opacity: .9; margin-top: 4px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 15px; }
+    .card { background: #1e293b; border-radius: 12px; padding: 14px; }
+    .card .valor { font-size: 1.8rem; font-weight: bold; }
+    .card .etiqueta { color: #94a3b8; font-size: .85rem; }
+    .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 15px; margin-bottom: 15px; }
+    .mapa-box { height: 480px; border-radius: 12px; overflow: hidden; position: relative; }
+    .mapa-box iframe, #mapa-estado { width: 100%; height: 100%; border: 0; }
+    .oculto { display: none; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+    .tab { background: #1e293b; color: #e2e8f0; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: .9rem; }
+    .tab.activa { background: #0ea5e9; color: #fff; }
+    .lista { background: #1e293b; border-radius: 12px; padding: 14px; overflow-y: auto; max-height: 480px; }
+    .lugar { display: flex; justify-content: space-between; align-items: center; padding: 10px 4px; border-bottom: 1px solid #334155; }
+    .lugar:last-child { border-bottom: none; }
+    .punto { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+    .grafico { background: #1e293b; border-radius: 12px; padding: 14px; height: 320px; }
+    @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>☁️ Nimbo</h1>
+    <span id="actualizado">Cargando…</span>
+  </header>
+
+  <div class="banner" id="banner">Cargando datos del clima…</div>
+
+  <section class="cards" id="cards"></section>
+
+  <section class="grid">
+    <div>
+      <div class="tabs">
+        <button class="tab activa" data-tab="estado">Estado por localidad</button>
+        <button class="tab" data-tab="windy">Lluvia y viento (Windy)</button>
+      </div>
+      <div class="mapa-box">
+        <div id="mapa-estado"></div>
+        <iframe id="mapa-windy" class="oculto" src="https://embed.windy.com/embed2.html?lat=-33.08&amp;lon=-68.47&amp;detailLat=-33.08&amp;detailLon=-68.47&amp;zoom=7&amp;level=surface&amp;overlay=rain&amp;product=ecmwf&amp;menu=&amp;message=true&amp;marker=true&amp;calendar=now&amp;pressure=&amp;type=map&amp;location=coordinates&amp;detail=&amp;metricWind=km%2Fh&amp;metricTemp=%C2%B0C&amp;radarRange=-1"></iframe>
+      </div>
+    </div>
+    <aside class="lista" id="lista"><strong>Mendoza ahora</strong></aside>
+  </section>
+
+  <div class="grafico"><canvas id="grafico"></canvas></div>
+
+  <script>
+    // ---------- Configuración ----------
+    const UMBRAL_LLUVIA  = 60;   // % de probabilidad de lluvia
+    const UMBRAL_RAFAGAS = 60;   // km/h
+    const CODIGOS_TORMENTA = [95, 96, 99];
+
+    // El primero de la lista es tu ubicación principal
+    const LUGARES = [
+      { nombre: 'San Martín',      lat: -33.08, lon: -68.47 },
+      { nombre: 'Mendoza capital', lat: -32.89, lon: -68.84 },
+      { nombre: 'Uspallata',       lat: -32.60, lon: -69.35 },
+      { nombre: 'Tunuyán',         lat: -33.57, lon: -69.02 },
+      { nombre: 'San Rafael',      lat: -34.62, lon: -68.33 },
+      { nombre: 'General Alvear',  lat: -34.98, lon: -67.69 },
+      { nombre: 'Malargüe',        lat: -35.47, lon: -69.58 }
+    ];
+
+    const textos  = ['Sin riesgo de tormenta', 'Riesgo moderado', 'Riesgo de tormenta'];
+    const colores = ['#2ecc71', '#f39c12', '#e74c3c'];
+    const iconos  = ['✅', '🌦️', '⛈️'];
+
+    // ---------- Mapa de estado por localidad ----------
+    const mapa = L.map('mapa-estado').setView([-34.6, -68.5], 6);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap',
+      maxZoom: 18
+    }).addTo(mapa);
+    const capa = L.layerGroup().addTo(mapa);
+    let primeraVez = true;
+    let grafico = null;
+
+    // ---------- Pestañas ----------
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('activa'));
+        btn.classList.add('activa');
+        const verEstado = btn.dataset.tab === 'estado';
+        document.getElementById('mapa-estado').classList.toggle('oculto', !verEstado);
+        document.getElementById('mapa-windy').classList.toggle('oculto', verEstado);
+        if (verEstado) mapa.invalidateSize();
+      });
+    });
+
+    // ---------- Análisis de las próximas 24 horas ----------
+    function analizar(api) {
+      return LUGARES.map((lugar, i) => {
+        const d = api[i].hourly;
+        const ahora = api[i].current.time.slice(0, 13) + ':00';
+        let inicio = d.time.indexOf(ahora);
+        if (inicio < 0) inicio = 0;
+
+        const horas = [], lluvia = [], rafagas = [], motivos = [];
+        let nivel = 0; // 0 = sin riesgo, 1 = moderado, 2 = tormenta
+
+        for (let k = inicio; k < inicio + 24 && k < d.time.length; k++) {
+          const hora = d.time[k].slice(11, 16);
+          const pl  = d.precipitation_probability[k] ?? 0;
+          const rf  = d.wind_gusts_10m[k] ?? 0;
+          const cod = d.weather_code[k];
+
+          horas.push(hora);
+          lluvia.push(pl);
+          rafagas.push(rf);
+
+          const m = [];
+          if (CODIGOS_TORMENTA.includes(cod)) { m.push('tormenta eléctrica'); nivel = 2; }
+          if (pl >= UMBRAL_LLUVIA)  m.push('lluvia ' + pl + '%');
+          if (rf >= UMBRAL_RAFAGAS) m.push('ráfagas ' + rf + ' km/h');
+          if (m.length) {
+            nivel = Math.max(nivel, 1);
+            motivos.push(hora + ': ' + m.join(', '));
+          }
+        }
+
+        return {
+          nombre: lugar.nombre, lat: lugar.lat, lon: lugar.lon,
+          temp: api[i].current.temperature_2m,
+          viento: api[i].current.wind_speed_10m,
+          nivel, motivos, horas, lluvia, rafagas
+        };
+      });
+    }
+
+    // ---------- Dibujar todo en pantalla ----------
+    function dibujar(res) {
+      const casa = res[0];
+
+      // Banner
+      const banner = document.getElementById('banner');
+      banner.style.background = colores[casa.nivel];
+      const detalle = casa.motivos.length
+        ? 'Primer aviso: ' + casa.motivos[0] + ' · ' + casa.motivos.length + ' hora(s) afectadas en las próximas 24 hs'
+        : 'Nada para preocuparse en las próximas 24 hs';
+      banner.innerHTML = iconos[casa.nivel] + ' ' + textos[casa.nivel] + ' en ' + casa.nombre
+                       + '<small>' + detalle + '</small>';
+
+      // Tarjetas
+      document.getElementById('cards').innerHTML =
+        '<div class="card"><div class="valor">' + casa.temp + '°C</div><div class="etiqueta">Temperatura ahora</div></div>' +
+        '<div class="card"><div class="valor">' + casa.viento + ' km/h</div><div class="etiqueta">Viento ahora</div></div>' +
+        '<div class="card"><div class="valor">' + Math.max(...casa.lluvia) + '%</div><div class="etiqueta">Lluvia máxima (24 hs)</div></div>' +
+        '<div class="card"><div class="valor">' + Math.max(...casa.rafagas) + ' km/h</div><div class="etiqueta">Ráfaga máxima (24 hs)</div></div>';
+
+      // Lista lateral
+      document.getElementById('lista').innerHTML = '<strong>Mendoza ahora</strong>' + res.map(r =>
+        '<div class="lugar"><span><span class="punto" style="background:' + colores[r.nivel] + '"></span>' + r.nombre +
+        '</span><span style="color:#94a3b8">' + r.temp + '°C</span></div>'
+      ).join('');
+
+      // Círculos de colores en el mapa
+      capa.clearLayers();
+      res.forEach((l, i) => {
+        const popup = '<b>' + l.nombre + '</b><br>' + textos[l.nivel] + '<br>' + l.temp + '°C · viento ' + l.viento + ' km/h'
+                    + (l.motivos.length ? '<br><small>' + l.motivos[0] + '</small>' : '');
+        L.circleMarker([l.lat, l.lon], {
+          radius: i === 0 ? 14 : 10,
+          color: '#fff', weight: i === 0 ? 3 : 1,
+          fillColor: colores[l.nivel], fillOpacity: 0.9
+        }).addTo(capa).bindPopup(popup);
+      });
+      if (primeraVez) {
+        mapa.fitBounds(res.map(l => [l.lat, l.lon]), { padding: [50, 50] });
+        primeraVez = false;
+      }
+
+      // Gráfico de las próximas 24 horas
+      if (grafico) grafico.destroy();
+      grafico = new Chart(document.getElementById('grafico'), {
+        type: 'line',
+        data: {
+          labels: casa.horas,
+          datasets: [
+            { label: 'Lluvia (%)', data: casa.lluvia, borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,.2)', fill: true, tension: .3, yAxisID: 'y' },
+            { label: 'Ráfagas (km/h)', data: casa.rafagas, borderColor: '#f59e0b', tension: .3, yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { title: { display: true, text: 'Próximas 24 horas en ' + casa.nombre, color: '#e2e8f0' }, legend: { labels: { color: '#e2e8f0' } } },
+          scales: {
+            x:  { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+            y:  { min: 0, max: 100, position: 'left',  ticks: { color: '#38bdf8' }, grid: { color: '#334155' } },
+            y1: { min: 0, position: 'right', ticks: { color: '#f59e0b' }, grid: { display: false } }
+          }
+        }
+      });
+
+      const h = new Date();
+      document.getElementById('actualizado').textContent =
+        'Actualizado a las ' + h.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }) + ' · se refresca solo cada 10 min';
+    }
+
+    // ---------- Consulta a la API (una sola llamada para todos los lugares) ----------
+    async function cargar() {
+      const params = new URLSearchParams({
+        latitude:  LUGARES.map(l => l.lat).join(','),
+        longitude: LUGARES.map(l => l.lon).join(','),
+        current: 'temperature_2m,wind_speed_10m',
+        hourly: 'precipitation_probability,wind_gusts_10m,weather_code',
+        forecast_days: 2,
+        timezone: 'auto'
+      });
+      try {
+        const resp = await fetch('https://api.open-meteo.com/v1/forecast?' + params);
+        let api = await resp.json();
+        if (api.error) throw new Error(api.reason);
+        if (!Array.isArray(api)) api = [api];
+        dibujar(analizar(api));
+      } catch (e) {
+        const banner = document.getElementById('banner');
+        banner.style.background = '#475569';
+        banner.innerHTML = '⚠️ No se pudo cargar el clima<small>' + e.message + ' · revisá tu conexión a internet</small>';
+      }
+    }
+
+    cargar();
+    setInterval(cargar, 10 * 60 * 1000);
+    // Al volver a abrir la pestaña o la app en el celular, actualiza al instante
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) cargar(); });
+  </script>
+</body>
+</html>
